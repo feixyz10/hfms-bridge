@@ -11,6 +11,7 @@ from .http import (
     RetryableTransferError,
     TransferError,
     check,
+    error_stage,
     origin,
     payload,
     trusted_api_redirect,
@@ -116,14 +117,14 @@ class HuggingFace:
                     yield File(item["path"], item["size"], lfs.get("oid", ""))
             url = next_url
 
-    def open(self, file, commit):
+    def open(self, file, commit, offset=0):
         prefix = "datasets/" if self.repo_type == "dataset" else ""
         url = "{}/{}{}/resolve/{}/{}".format(
             self.endpoint, prefix, self.repo, commit, quote(file.path, safe="/")
         )
-        response = self.http.download(url, self.token)
+        response = self.http.download(url, self.token, offset=offset, total=file.size)
         length = response.headers.get("Content-Length")
-        if length is not None and int(length) != file.size:
+        if length is not None and int(length) != file.size - offset:
             response.close()
             raise TransferError("Source Content-Length disagrees with pinned metadata")
         return response
@@ -369,16 +370,17 @@ class ModelScope:
         stream.verify()
         if "verify" in actions:
             action = actions["verify"]
-            with self.blob_http.request(
-                "POST",
-                action["href"],
-                headers=self._action_headers(action),
-                json={"oid": sha256, "size": size},
-                allow_redirects=False,
-            ) as response:
-                check(response)
-                if response.content:
-                    payload(response)
+            with error_stage("MS verify"):
+                with self.blob_http.request(
+                    "POST",
+                    action["href"],
+                    headers=self._action_headers(action),
+                    json={"oid": sha256, "size": size},
+                    allow_redirects=False,
+                ) as response:
+                    check(response)
+                    if response.content:
+                        payload(response)
 
     def commit(self, operation):
         return self._api(

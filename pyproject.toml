@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hf2ms"
-version = "0.3.1"
+version = "0.3.2"
 description = "Stream Hugging Face models and datasets to ModelScope with parallel uploads and file-level resume"
 readme = "docs/README.md"
 authors = [{ name = "ExcitingMe" }]

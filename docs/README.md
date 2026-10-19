@@ -102,9 +102,11 @@ New destinations start on `master`; other MS branches must already exist. HF and
 
 Keep the original repositories, revisions, filters, conflict policy, endpoints, visibility setting, and cache directory. An unfinished task continues its original HF snapshot even if the source branch has changed. Do not add `--restart` unless you intend to discard local progress and resolve the source revision again.
 
-Recovery is **file-level**, not byte-level: an incomplete file restarts from the beginning. If a complete file blob was uploaded but its commit failed, hf2ms can reuse that blob when ModelScope still has it.
+Recovery after restarting the process is **file-level**: an incomplete file restarts from the beginning. During a running transfer, interrupted HF reads can reconnect with HTTP Range while keeping the current MS upload alive; byte progress does not reset. This requires a valid range response from HF and an MS connection that remains open. If range recovery fails or the MS upload connection breaks, the file restarts from byte zero. If a complete file blob was uploaded but its commit failed, hf2ms can reuse that blob when ModelScope still has it.
 
 Progress records are stored in `~/.cache/hf2ms/` by default, with a 256 MiB cache budget. Completed idle task records are removed first when space is needed; unfinished tasks are preserved. If the budget cannot accommodate them, increase `--cache-max-size` and rerun the command.
+
+Errors identify the failing stage (`HF read`, `MS negotiate`, `MS upload`, `MS verify`, or `MS commit`). Each source-reading pass allows at most `--attempts - 1` reconnections, with bounded backoff; this budget is separate from the existing whole-file retry budget. File payloads remain off disk.
 
 ## Useful options
 
@@ -130,7 +132,7 @@ Use `hf2ms --help` for all options, including timeouts, read buffer size, and cu
 - Each file is committed separately. If one file fails after retries, no new files are scheduled; other active files finish before the command exits with an error. Rerun to resume.
 - File contents stay off disk, but memory usage grows with the number of workers. Large files without an HF SHA-256 need two streaming reads: one to calculate the hash and one to upload.
 - A byte bar at 100% means the uploader consumed the bytes. The file is not complete until the subsequent commit succeeds.
-- Automatic branch/tag creation and byte-offset resume are not supported. Repository metadata files such as `README.md` larger than 1 MiB are not supported. Some very large HF files may be unavailable through HTTP downloads.
+- Automatic branch/tag creation and destination-side byte-offset resume are not supported. Repository metadata files such as `README.md` larger than 1 MiB are not supported. Some very large HF files may be unavailable through HTTP downloads.
 
 ## Documentation and license
 

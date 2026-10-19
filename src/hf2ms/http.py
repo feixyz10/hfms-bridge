@@ -1,6 +1,8 @@
 """Explicit HTTP error handling and bounded, integrity-checked request bodies."""
 
 import hashlib
+import re
+from contextlib import contextmanager
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -22,6 +24,22 @@ class HTTPError(TransferError):
         super().__init__(f"{label} failed (status {status})")
         self.status = status
         self.retry_after = retry_after
+
+
+@contextmanager
+def error_stage(stage):
+    """Label failures without exposing request URLs, headers or exception bodies."""
+    try:
+        yield
+    except TransferError as exc:
+        if not getattr(exc, "stage", None):
+            exc.stage = stage
+            exc.args = (f"{stage}: {exc}",)
+        raise
+    except (requests.RequestException, UrllibError) as exc:
+        failure = RetryableTransferError(f"{stage}: network {type(exc).__name__}")
+        failure.stage = stage
+        raise failure from exc
 
 
 def check(response):
@@ -91,7 +109,7 @@ def validate_url(url):
 class HTTP:
     def __init__(self, timeout=120):
         self.session = requests.Session()
-        self.session.headers["User-Agent"] = "hf2ms/0.3.1"
+        self.session.headers["User-Agent"] = "hf2ms/0.3.2"
         self.timeout = (15, timeout)
 
     def close(self):
@@ -146,8 +164,10 @@ class HTTP:
             kwargs.pop("params", None)
         raise TransferError("Too many API redirects")
 
-    def download(self, url, token=None):
+    def download(self, url, token=None, offset=0, total=None):
         headers = {"Accept-Encoding": "identity"}
+        if offset:
+            headers["Range"] = f"bytes={offset}-"
         if token:
             headers["Authorization"] = "Bearer " + token
         # Handle redirects ourselves so cookies and auth cannot cross origins.
@@ -162,10 +182,25 @@ class HTTP:
                 url = next_url
                 continue
             try:
+                if offset and response.status_code == 416:
+                    raise RetryableTransferError("HF Range response rejected the requested offset")
                 check(response)
-                if response.status_code != 200:
+                if offset:
+                    match = re.fullmatch(
+                        r"bytes (\d+)-(\d+)/(\d+)",
+                        response.headers.get("Content-Range", ""),
+                    )
+                    if (response.status_code != 206 or not match or
+                            tuple(map(int, match.groups())) != (offset, total - 1, total)):
+                        raise RetryableTransferError("HF Range response has invalid status or range")
+                    length = response.headers.get("Content-Length")
+                    if length is not None and length != str(total - offset):
+                        raise RetryableTransferError("HF Range response has invalid length")
+                elif response.status_code != 200:
                     raise TransferError("Expected a full-file HTTP 200 response")
                 if response.headers.get("Content-Encoding", "identity") != "identity":
+                    if offset:
+                        raise RetryableTransferError("HF Range response ignored Accept-Encoding: identity")
                     raise TransferError("Server ignored Accept-Encoding: identity")
                 return response
             except BaseException:
@@ -191,6 +226,7 @@ class CheckedStream:
     def __len__(self):
         return self.size
 
+    @error_stage("HF read")
     def read(self, size=-1):
         remaining = self.size - self.count
         if not remaining:
@@ -224,3 +260,56 @@ class CheckedStream:
             raise TransferError("Upload did not consume the complete source")
         if self.expected and self.hash.hexdigest() != self.expected:
             raise TransferError("Source SHA-256 mismatch")
+
+
+class ResumingReader:
+    """Reconnect the pinned source while keeping the destination PUT alive.
+
+    Only returned bytes count: a raw.read() that raises may have consumed partial
+    bytes internally, but those bytes must be fetched again. No payload is saved.
+    The retry budget covers the entire reader, not each successful chunk.
+    """
+
+    def __init__(self, opener, size, attempts, backoff, cancelled, on_resume):
+        self.opener, self.size = opener, size
+        self.attempts, self.backoff = attempts, backoff
+        self.cancelled, self.on_resume = cancelled, on_resume
+        self.response = None
+        self.offset = 0
+        self.reconnects = 0
+
+    def __enter__(self):
+        with error_stage("HF read"):
+            self.cancelled()
+            self.response = self.opener(0)
+        return self
+
+    def __exit__(self, *args):
+        if self.response is not None:
+            self.response.close()
+
+    def read(self, size):
+        with error_stage("HF read"):
+            while True:
+                self.cancelled()
+                try:
+                    if self.response is None:
+                        self.response = self.opener(self.offset)
+                    data = self.response.raw.read(size)
+                    if not data and self.offset < self.size:
+                        raise requests.ConnectionError("Source ended early")
+                    self.offset += len(data)
+                    return data
+                except (requests.RequestException, UrllibError) as exc:
+                    if self.response is not None:
+                        self.response.close()
+                        self.response = None
+                    # At EOF no remaining range exists; do not fabricate bytes.
+                    if self.reconnects >= self.attempts - 1 or self.offset >= self.size:
+                        raise RetryableTransferError(
+                            f"HF read recovery exhausted ({type(exc).__name__}); "
+                            "restarting file if attempts remain"
+                        ) from exc
+                    self.reconnects += 1
+                    self.on_resume(self.offset, self.reconnects)
+                    self.backoff(min(2 ** (self.reconnects - 1), 30))

@@ -4,7 +4,6 @@ import io
 import subprocess
 import sys
 import threading
-from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -78,7 +77,7 @@ def test_cancel_stops_stream_reads_and_retry_backoff(tmp_path, monkeypatch):
     monkeypatch.setattr(
         transfer.source,
         "open",
-        lambda *args: nullcontext(SimpleNamespace(raw=CancelledRead(b"abcd"))),
+        lambda *args, **kwargs: SimpleNamespace(raw=CancelledRead(b"abcd"), close=lambda: None),
     )
     try:
         with pytest.raises(TransferError, match="interrupted"):

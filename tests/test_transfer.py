@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from hf2ms import Transfer, TransferOptions
-from hf2ms.http import CheckedStream, HTTPError, TransferError
+from hf2ms.http import CheckedStream, HTTPError, RetryableTransferError, TransferError
 from hf2ms.hubs import ModelScope
 from hf2ms.state import State
 
@@ -92,6 +92,28 @@ def server():
                 blob = BLOB if self.path.endswith("weights.bin") else b"hello"
                 if data["bad_source"]:
                     blob = b"x" * len(blob)
+                if self.path.endswith("weights.bin"):
+                    range_header = self.headers.get("Range")
+                    data.setdefault("source_ranges", []).append(range_header)
+                    if data.get("drop_source") and not range_header:
+                        data["drop_source"] = False
+                        self.send_response(200)
+                        self.send_header("Content-Length", str(len(blob)))
+                        self.end_headers()
+                        self.wfile.write(blob[:100000])
+                        self.wfile.flush()
+                        self.connection.shutdown(socket.SHUT_RDWR)
+                        self.connection.close()
+                        return
+                    if range_header and not data.get("ignore_range"):
+                        start = int(range_header.removeprefix("bytes=").removesuffix("-"))
+                        headers = {
+                            "Content-Range": f"bytes {start}-{len(blob) - 1}/{len(blob)}",
+                        }
+                        if data.get("encoded_range"):
+                            headers["Content-Encoding"] = "gzip"
+                        self.reply(blob[start:], 206, headers)
+                        return
                 self.reply(blob)
             elif self.path.startswith("/api/v1/"):
                 if self.path.endswith("/revisions"):
@@ -274,12 +296,11 @@ def test_hash_pass_without_lfs_metadata(tmp_path):
 
 
 def test_actual_socket_disconnect_and_resume(tmp_path):
-    import requests
 
     with server() as (base, data):
         opt = options(tmp_path, base)
         data["drop_put"] = True
-        with pytest.raises(requests.RequestException):
+        with pytest.raises(RetryableTransferError, match="MS upload: network"):
             Transfer(opt, "ms-secret").run()
         assert not data["blob"]
         assert data["commits"] == 0

@@ -15,7 +15,9 @@ from typing import Optional, Tuple
 
 import requests
 
-from .http import CheckedStream, HTTPError, RetryableTransferError, TransferError
+from .http import (
+    CheckedStream, HTTPError, ResumingReader, RetryableTransferError, TransferError, error_stage,
+)
 from .hubs import HuggingFace, ModelScope
 from .state import Cache
 from .progress import Progress
@@ -466,11 +468,23 @@ class Transfer:
         report["on_conflict"] = self.options.on_conflict
         return report
 
+    def _source_reader(self, file, commit):
+        def report(offset, attempt):
+            log.warning(
+                "%r: HF read interrupted; resuming at byte %s (reconnect %s/%s)",
+                file.path, offset, attempt, self.options.attempts - 1,
+            )
+
+        return ResumingReader(
+            lambda offset: self.source.open(file, commit, offset=offset),
+            file.size, self.options.attempts, self._backoff, self._check_cancelled, report,
+        )
+
     def _read(self, file, commit, sha256="", collect=False):
         self.progress.phase("HF read" if collect else "Hashing", reset=True)
-        with self.source.open(file, commit) as response:
+        with self._source_reader(file, commit) as reader:
             stream = CheckedStream(
-                response.raw,
+                reader,
                 file.size,
                 sha256,
                 self.options.chunk_size,
@@ -509,18 +523,20 @@ class Transfer:
                 self.progress.info("No HF SHA-256; streaming hash pass: %s", file.path)
                 sha256, _ = self._read(file, commit)
                 state.mark(file.path, file.size, sha256, "hashed")
-            actions = self.target.negotiate(sha256, file.size)
+            with error_stage("MS negotiate"):
+                actions = self.target.negotiate(sha256, file.size)
             if actions is not None:
                 self.progress.phase("HF -> MS", reset=True)
-                with self.source.open(file, commit) as response:
+                with self._source_reader(file, commit) as reader:
                     stream = CheckedStream(
-                        response.raw,
+                        reader,
                         file.size,
                         sha256,
                         self.options.chunk_size,
                         on_read=self._on_read,
                     )
-                    self.target.upload(actions, stream, sha256, file.size)
+                    with error_stage("MS upload"):
+                        self.target.upload(actions, stream, sha256, file.size)
             else:
                 self.progress.phase("Reused")
                 self.progress.info("Reuse complete blob: %s", file.path)
@@ -532,5 +548,6 @@ class Transfer:
         with self._commit_lock:
             self._check_cancelled()
             self.progress.phase("Committing")
-            self.target.commit(operation)
+            with error_stage("MS commit"):
+                self.target.commit(operation)
             state.mark(file.path, file.size, sha256, "committed")
