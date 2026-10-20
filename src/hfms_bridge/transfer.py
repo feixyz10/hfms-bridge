@@ -13,15 +13,13 @@ from threading import Event, Lock, current_thread, local, main_thread
 from types import SimpleNamespace
 from typing import Tuple
 
-import requests
 
 from .http import (
     CheckedStream,
-    HTTPError,
     ResumingReader,
-    RetryableTransferError,
     TransferError,
     error_stage,
+    retry_call,
 )
 from .hubs import HuggingFace, ModelScope
 from .hubs.common import INLINE_LIMIT
@@ -130,39 +128,21 @@ class Transfer:
         self.progress.update(size)
 
     def _retry(self, operation):
-        for attempt in range(self.options.attempts):
-            self._check_cancelled()
-            try:
-                return operation()
-            except (HTTPError, RetryableTransferError, requests.RequestException) as exc:
-                retryable = not isinstance(exc, HTTPError) or exc.status in (
-                    408,
-                    429,
-                    500,
-                    502,
-                    503,
-                    504,
-                )
-                if not retryable or attempt + 1 == self.options.attempts:
-                    raise
-                delay = min(2**attempt, 30)
-                if isinstance(exc, HTTPError) and exc.retry_after:
-                    try:
-                        delay = min(max(delay, float(exc.retry_after)), 300)
-                    except ValueError:
-                        pass
-                reason = str(exc) if isinstance(exc, TransferError) else "Network request failure"
-                path = self.progress.path
-                self.progress.phase(f"Retrying {attempt + 2}/{self.options.attempts}")
-                log.warning(
-                    "%s%s; retrying attempt %s/%s in %ss",
-                    f"{path!r}: " if path else "",
-                    reason,
-                    attempt + 2,
-                    self.options.attempts,
-                    delay,
-                )
-                self._backoff(delay)
+        def report(reason, attempt, delay):
+            path = self.progress.path
+            self.progress.phase(f"Retrying {attempt}/{self.options.attempts}")
+            log.warning(
+                "%s%s; retrying attempt %s/%s in %ss",
+                f"{path!r}: " if path else "",
+                reason,
+                attempt,
+                self.options.attempts,
+                delay,
+            )
+
+        return retry_call(
+            operation, self.options.attempts, self._check_cancelled, self._backoff, report
+        )
 
     def _identity(self):
         opt = self.options

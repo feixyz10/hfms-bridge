@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hfms-bridge"
-version = "0.4.0"
+version = "0.5.0"
 description = "Stream models and datasets between HuggingFace and ModelScope"
 readme = "docs/README.md"
 authors = [{ name = "ExcitingMe" }]
@@ -35,6 +35,7 @@ Issues = "https://github.com/feixyz10/hfms-bridge/issues"
 
 [project.scripts]
 hfms-bridge = "hfms_bridge.cli:main"
+hfms-download = "hfms_bridge.download_cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8,<9", "ruff>=0.11,<1"]

@@ -15,7 +15,6 @@ uv run hfms-bridge ms2hf --help
 
 目标端 token 必须显式传入。源端 token 可选，默认读取 `HF_TOKEN` 或 `MODELSCOPE_API_TOKEN`；私有或受限源仓库需要具备读取权限的 token。
 
-
 ## 参数与仓库行为
 
 | 参数                                   | 默认值 / 行为                                                                           |
@@ -91,3 +90,35 @@ uv build
 本地 HTTP 服务测试覆盖双向流式请求、分片完成、Range 恢复、固定清单恢复、冲突处理、缓存限制、取消和进度。CI 配置 Python 3.9–3.14 与 Linux/macOS/Windows。公开 MS 模型/数据集下载和 HF 元数据接口另行只读验证；本地测试不能替代真实鉴权上传的端到端验证。
 
 协议参考：[HF LFS](https://github.com/huggingface/huggingface_hub/blob/main/src/huggingface_hub/lfs.py)、[HF commit](https://github.com/huggingface/huggingface_hub/blob/main/src/huggingface_hub/_commit_api.py)、[MS REST/LFS](https://github.com/modelscope/modelscope_hub/blob/main/src/modelscope_hub/_legacy_api.py)。
+
+## 下载到本地
+
+同一包新增 `hfms-download`，复用 HF/MS 源适配器及网络重试逻辑，直接写入本地文件，不使用全局下载缓存。
+
+```bash
+uv run hfms-download hf Qwen/Qwen3-0.6B --local-dir ./model
+uv run hfms-download ms owner/repo --local-dir ./models --layout repo
+uv run hfms-download hf owner/repo config.json --local-dir ./model
+uv run hfms-download ms owner/repo --preset author
+uv run hfms-download ms --help
+```
+
+必须选择 `--local-dir PATH` 或 `--preset author`，两者互斥。`--local-dir` 默认采用 `direct` 布局，直接写入指定目录；`--layout repo` 追加 `owner/repository`。仓库内部目录结构始终保留。
+
+作者预设不默认启用：模型使用 `HF_MODELS`，数据集使用 `HF_DATASETS`，并追加仓库 ID。只校验识别出的类型对应的变量；变量必须非空并指向已存在的目录，否则报错，不回退到其他位置。预设不能与 `--layout` 同用。HF/MS 都使用这两个变量，它们是本工具约定的本地目录配置。
+
+下载支持 `--repo-type auto|model|dataset`、`--revision`、`--token`、`--endpoint`、`--include`、`--exclude`。默认 revision 分别为 HF 的 main 和 MS 的 master；token 默认读取 HF_TOKEN 或 MODELSCOPE_API_TOKEN。位置参数中的文件名为精确路径，不存在时报错；include/exclude 继续筛选这些文件。
+
+`--max-workers` 默认 4，按文件并行，单文件顺序下载；`--attempts`、`--timeout`、`--chunk-size` 默认分别为 3、120 秒、1MiB。`--progress` 控制总进度和活动文件进度；`--quiet` 隐藏普通日志和进度但保留警告、错误。成功时 stdout 输出目标路径。
+
+`--dry-run` 只输出 JSON 计划，不读取文件内容、不创建目录、不修改状态。`--force-download` 重新解析源版本、丢弃旧部分文件，并允许重新下载替换已有本地文件。
+
+状态目录位于最终目录旁：`./model` 对应 `./.model.hfms-download`；`./models/org/repo` 对应 `./models/org/.repo.hfms-download`。后续上传最终仓库目录时不会带入这些内部文件。状态目录与目标目录必须位于同一文件系统。删除状态目录会失去部分文件恢复信息，不会删除已完成文件。
+
+未完成任务用 JSON 清单固定源版本；每个文件的小型 metadata 绑定内容身份，`.incomplete` 的实际长度就是恢复偏移量，不保存百分比、不逐块写数据库。重启后先重新计算已有前缀的哈希，验证 Range 响应后追加下载。MS 普通文件从头重下；MS LFS 和返回正确 Range 的 HF 文件可在进程退出后续传。不正确的 Range 会在重试预算内退回整文件下载。
+
+完成后验证长度及源端提供的 SHA-256/Git blob SHA-1，再原子移动到正式路径；源端没有可信摘要时明确警告只完成长度校验。文件读取使用有限缓冲，清单内存随仓库文件数增长。
+
+已有相同文件校验后跳过；未知或本地修改过的文件需加 `--force-download`。本工具管理且未被修改的文件允许按新源版本更新，旧文件保留至新文件验证成功，因此更新期间可能需要两份文件的空间。完整任务下次执行会刷新源版本，未完成任务保留原快照。目录绑定平台、仓库、revision 参数和 endpoint；切换身份请使用其他目录，或先移走/清理其状态。不会删除无关本地文件。
+
+同一目标目录只允许一个下载进程。Ctrl-C 等待活动网络调用返回或超时，停止工作线程后释放锁，保留可恢复部分文件。禁止越界路径、目标符号链接、Windows 保留名称及冲突路径；状态中不保存 token。

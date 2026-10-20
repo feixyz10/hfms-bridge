@@ -26,6 +26,34 @@ class HTTPError(TransferError):
         self.retry_after = retry_after
 
 
+def retry_call(operation, attempts, check_cancelled, backoff, report):
+    """Shared retry policy; never implicitly replay a consumed request body."""
+    for attempt in range(attempts):
+        check_cancelled()
+        try:
+            return operation()
+        except (HTTPError, RetryableTransferError, requests.RequestException) as exc:
+            retryable = not isinstance(exc, HTTPError) or exc.status in (
+                408,
+                429,
+                500,
+                502,
+                503,
+                504,
+            )
+            if not retryable or attempt + 1 == attempts:
+                raise
+            delay = min(2**attempt, 30)
+            if isinstance(exc, HTTPError) and exc.retry_after:
+                try:
+                    delay = min(max(delay, float(exc.retry_after)), 300)
+                except ValueError:
+                    pass
+            reason = str(exc) if isinstance(exc, TransferError) else "Network request failure"
+            report(reason, attempt + 2, delay)
+            backoff(delay)
+
+
 @contextmanager
 def error_stage(stage):
     """Label failures without exposing request URLs, headers or exception bodies."""
@@ -109,7 +137,7 @@ def validate_url(url):
 class HTTP:
     def __init__(self, timeout=120):
         self.session = requests.Session()
-        self.session.headers["User-Agent"] = "hfms-bridge/0.4.0"
+        self.session.headers["User-Agent"] = "hfms-bridge/0.5.0"
         self.timeout = (15, timeout)
 
     def close(self):

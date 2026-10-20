@@ -98,3 +98,43 @@ uv build
 Tests use local HTTP servers for both directions, actual streaming requests, multipart completion, Range recovery, pinned-manifest recovery, conflict handling, cache limits, cancellation and progress. CI covers Python 3.9–3.14 on Linux/macOS/Windows. Public MS model/dataset downloads and HF metadata endpoints are checked separately; local server tests do not replace authenticated end-to-end service validation.
 
 Protocol references: [HF LFS implementation](https://github.com/huggingface/huggingface_hub/blob/main/src/huggingface_hub/lfs.py), [HF commits](https://github.com/huggingface/huggingface_hub/blob/main/src/huggingface_hub/_commit_api.py), [ModelScope REST/LFS](https://github.com/modelscope/modelscope_hub/blob/main/src/modelscope_hub/_legacy_api.py).
+
+## Download repositories locally
+
+The same package also provides `hfms-download`. It uses the shared HF/MS source adapters and network retry policy, and writes directly to local files without a global download cache.
+
+```bash
+uv run hfms-download hf Qwen/Qwen3-0.6B --local-dir ./model
+uv run hfms-download ms owner/repo --local-dir ./models --layout repo
+uv run hfms-download hf owner/repo config.json --local-dir ./model
+uv run hfms-download ms owner/repo --preset author
+uv run hfms-download hf --help
+```
+
+`--local-dir` and `--preset author` are mutually exclusive, and one is required. The default `direct` layout puts repository contents directly in `--local-dir`; `--layout repo` appends `owner/repository`. Internal repository subdirectories are always preserved.
+
+The opt-in `author` preset uses `HF_MODELS` for models or `HF_DATASETS` for datasets and appends the repository ID. Only the variable for the detected repository type is required. It must be nonempty and point to an existing directory; no fallback directory is used. The preset cannot be combined with `--layout`. Both hubs use the same two variables, which are this tool's local-directory convention.
+
+| Option | Behavior |
+|---|---|
+| `hf` / `ms` | Required source subcommand |
+| `repo_id [filenames ...]` | Repository plus optional exact file paths; missing explicit paths are errors |
+| `--repo-type auto\|model\|dataset` | Same source-type detection as transfers |
+| `--revision REV` | HF `main`, MS `master` by default |
+| `--token TOKEN` | Optional source token; defaults to `HF_TOKEN` or `MODELSCOPE_API_TOKEN` |
+| `--endpoint URL` | Source endpoint override; defaults to its environment variable or official URL |
+| `--include / --exclude` | Repeatable case-sensitive globs; filters also apply to explicit filenames |
+| `--max-workers N` | 4 concurrent files by default; each file downloads sequentially |
+| `--attempts / --timeout / --chunk-size` | Defaults: 3 attempts, 120-second socket read timeout, 1MiB buffer |
+| `--progress auto\|on\|off` | Overall file count plus temporary byte bars |
+| `--force-download` | Resolve source again, discard old partials, redownload and permit replacing local files |
+| `--dry-run` | Read-only JSON plan; no payload reads or directory/state writes |
+| `--quiet` | Hide progress and informational logs; retain warnings/errors |
+
+Recovery state lives in a sibling directory: `./model` has `./.model.hfms-download`; `./models/org/repo` has `./models/org/.repo.hfms-download`. Upload only the final repository directory to avoid including state. The sibling directory must be on the same filesystem as the destination. Do not edit its files; deleting it loses partial-download recovery, but not completed repository files.
+
+A JSON manifest pins source versions for an unfinished run. Per-file metadata identifies the partial content; the `.incomplete` file's actual length is the resume offset. No percentage or per-chunk database updates are needed. On restart, the existing prefix is rehashed and downloaded bytes are appended only after strict Range validation. MS ordinary files restart; MS LFS and compatible HF responses resume. Invalid ranges restart the file within the retry budget. Completed files are validated and atomically moved into place. SHA-256 or Git blob SHA-1 is checked when the source supplies it; otherwise a warning states that only length was verified. Hash checking uses bounded buffers; manifest memory scales with repository file count.
+
+Existing identical files are skipped after verification. Unknown or locally modified files require `--force-download`; previously downloaded, unchanged files can be updated after the source changes. Updates retain the old final file until its replacement is verified, which temporarily requires space for both versions. Successful runs refresh source versions on the next invocation; unfinished runs retain the original snapshot. A destination cannot be reused for another repository, revision argument or endpoint identity without moving/removing its state or choosing a different directory. Unrelated local files are not deleted.
+
+One process owns a destination at a time. Ctrl-C stops workers before releasing the lock and leaves recoverable partials; an active network read may need to time out. Paths that escape the destination, destination symlinks, Windows-reserved names and conflicting file paths are rejected. Download metadata does not store tokens.

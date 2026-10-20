@@ -23,6 +23,7 @@ class File:
     sha256: str = ""
     revision: str = ""
     lfs: bool = True
+    git_sha1: str = ""
 
     def __post_init__(self):
         if (
@@ -36,6 +37,8 @@ class File:
             raise ValueError("Negative file size")
         if self.sha256 and not re.fullmatch("[0-9a-f]{64}", self.sha256):
             raise ValueError("Invalid SHA-256 metadata")
+        if self.git_sha1 and not re.fullmatch("[0-9a-f]{40}", self.git_sha1):
+            raise ValueError("Invalid Git SHA-1 metadata")
 
 
 class BlobTarget:

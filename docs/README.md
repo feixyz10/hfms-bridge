@@ -68,3 +68,30 @@ For ordinary HF destination files, checking equality may require another source 
 
 
 Source and developer documentation: [English](https://github.com/feixyz10/hfms-bridge/blob/main/README.md), [简体中文](https://github.com/feixyz10/hfms-bridge/blob/main/README_CN.md).
+
+## Download to a local directory
+
+`hfms-download` downloads from either hub using the same package:
+
+```bash
+hfms-download hf Qwen/Qwen3-0.6B --local-dir ./model
+hfms-download ms owner/repo --local-dir ./models --layout repo
+hfms-download hf owner/repo config.json --local-dir ./model
+hfms-download ms --help
+```
+
+Choose `--local-dir` or `--preset author` explicitly; there is no global-cache fallback. The default layout writes directly into `--local-dir`. `--layout repo` appends `owner/repository`, preserving all subdirectories inside the repository.
+
+The optional author preset selects an existing base directory from `HF_MODELS` for models or `HF_DATASETS` for datasets and appends `owner/repository`:
+
+```bash
+hfms-download ms owner/repo --preset author
+```
+
+Only the selected type's variable is required. An unset/empty variable or a nonexistent directory is an error. The preset is not enabled automatically and cannot be combined with `--local-dir` or `--layout`.
+
+Use `--repo-type`, `--revision`, `--include` and `--exclude` to select content. Public sources need no token; `--token` defaults to `HF_TOKEN` or `MODELSCOPE_API_TOKEN`. `--endpoint` supports source endpoint overrides, including an HF download mirror. `--max-workers` defaults to four concurrent files, with sequential reads within each file. `--dry-run` produces a JSON plan without downloading payloads or writing local state.
+
+Partial files and metadata are stored beside the final repository directory: `./model` uses `./.model.hfms-download`. Uploading only `./model` excludes these internal files. The two directories must be on the same filesystem. Run the same command after interruption to resume unfinished HF/MS LFS files with validated Range responses; ordinary MS files restart. Completed files are verified and moved into place, and identical existing files are skipped. Unknown or modified local files require `--force-download` to replace them. Updating an existing file temporarily needs space for the old and new versions.
+
+Unfinished tasks retain their source versions. Successfully completed tasks check the current source version on the next run. `--force-download` resolves versions again and discards old partials. State binds the destination to its repository, revision argument and endpoint. No token is stored in download state. Use `--quiet` to suppress progress and informational logs; successful downloads print the destination path.

@@ -94,7 +94,12 @@ class HuggingFace(BlobTarget):
             for item in entries:
                 if item.get("type") == "file":
                     lfs = item.get("lfs") or {}
-                    yield File(item["path"], item["size"], lfs.get("oid", ""))
+                    yield File(
+                        item["path"],
+                        item["size"],
+                        lfs.get("oid", ""),
+                        git_sha1=item.get("oid", "") if not lfs else "",
+                    )
             url = next_url
 
     def open(self, file, commit, offset=0):
