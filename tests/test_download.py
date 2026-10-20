@@ -197,7 +197,7 @@ def test_filters_and_missing_explicit_file(tmp_path):
 @pytest.mark.parametrize("kind,variable", [("model", "HF_MODELS"), ("dataset", "HF_DATASETS")])
 def test_preset_validation_and_layout(tmp_path, monkeypatch, kind, variable):
     with server(kind=kind) as (base, data):
-        opt = DownloadOptions("ms", "alice/source", preset="author", endpoint=base, dry_run=True)
+        opt = DownloadOptions("ms", "alice/source", preset=True, endpoint=base, dry_run=True)
         monkeypatch.delenv(variable, raising=False)
         with pytest.raises(TransferError, match=variable):
             Download(opt).run()
@@ -247,9 +247,9 @@ def test_cli_requires_destination_and_lists_preset():
     with pytest.raises(SystemExit):
         parser.parse_args(["hf", "a/b"])
     with pytest.raises(ValueError):
-        DownloadOptions("hf", "a/b", preset="author", layout="repo")
-    args = parser.parse_args(["ms", "a/b", "file.pt", "--preset", "author"])
-    assert args.filenames == ["file.pt"] and args.preset == "author"
+        DownloadOptions("hf", "a/b", preset=True, layout="repo")
+    args = parser.parse_args(["ms", "a/b", "file.pt", "--preset"])
+    assert args.filenames == ["file.pt"] and args.preset is True
 
 
 def test_hf_network_retry_keeps_partial_bytes(tmp_path):
@@ -343,5 +343,5 @@ def test_cli_preset_layout_conflict():
     from hfms_bridge.download_cli import main
 
     with pytest.raises(SystemExit) as exc:
-        main(["ms", "a/b", "--preset", "author", "--layout", "repo"])
+        main(["ms", "a/b", "--preset", "--layout", "repo"])
     assert exc.value.code == 2

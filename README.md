@@ -107,13 +107,13 @@ The same package also provides `hfms-download`. It uses the shared HF/MS source 
 uv run hfms-download hf Qwen/Qwen3-0.6B --local-dir ./model
 uv run hfms-download ms owner/repo --local-dir ./models --layout repo
 uv run hfms-download hf owner/repo config.json --local-dir ./model
-uv run hfms-download ms owner/repo --preset author
+uv run hfms-download ms owner/repo --preset
 uv run hfms-download hf --help
 ```
 
-`--local-dir` and `--preset author` are mutually exclusive, and one is required. The default `direct` layout puts repository contents directly in `--local-dir`; `--layout repo` appends `owner/repository`. Internal repository subdirectories are always preserved.
+`--local-dir` and `--preset` are mutually exclusive, and one is required. The default `direct` layout puts repository contents directly in `--local-dir`; `--layout repo` appends `owner/repository`. Internal repository subdirectories are always preserved.
 
-The opt-in `author` preset uses `HF_MODELS` for models or `HF_DATASETS` for datasets and appends the repository ID. Only the variable for the detected repository type is required. It must be nonempty and point to an existing directory; no fallback directory is used. The preset cannot be combined with `--layout`. Both hubs use the same two variables, which are this tool's local-directory convention.
+The opt-in `--preset` flag uses `HF_MODELS` for models or `HF_DATASETS` for datasets and appends the repository ID. Only the variable for the detected repository type is required. It must be nonempty and point to an existing directory; no fallback directory is used. The preset cannot be combined with `--layout`. Both hubs use the same two variables, which are this tool's local-directory convention.
 
 | Option | Behavior |
 |---|---|

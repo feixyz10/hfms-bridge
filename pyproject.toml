@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hfms-bridge"
-version = "0.5.0"
+version = "0.5.1"
 description = "Stream models and datasets between HuggingFace and ModelScope"
 readme = "docs/README.md"
 authors = [{ name = "ExcitingMe" }]

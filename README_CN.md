@@ -99,11 +99,11 @@ uv build
 uv run hfms-download hf Qwen/Qwen3-0.6B --local-dir ./model
 uv run hfms-download ms owner/repo --local-dir ./models --layout repo
 uv run hfms-download hf owner/repo config.json --local-dir ./model
-uv run hfms-download ms owner/repo --preset author
+uv run hfms-download ms owner/repo --preset
 uv run hfms-download ms --help
 ```
 
-必须选择 `--local-dir PATH` 或 `--preset author`，两者互斥。`--local-dir` 默认采用 `direct` 布局，直接写入指定目录；`--layout repo` 追加 `owner/repository`。仓库内部目录结构始终保留。
+必须选择 `--local-dir PATH` 或 `--preset`，两者互斥。`--local-dir` 默认采用 `direct` 布局，直接写入指定目录；`--layout repo` 追加 `owner/repository`。仓库内部目录结构始终保留。
 
 作者预设不默认启用：模型使用 `HF_MODELS`，数据集使用 `HF_DATASETS`，并追加仓库 ID。只校验识别出的类型对应的变量；变量必须非空并指向已存在的目录，否则报错，不回退到其他位置。预设不能与 `--layout` 同用。HF/MS 都使用这两个变量，它们是本工具约定的本地目录配置。
 

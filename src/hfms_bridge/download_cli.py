@@ -44,8 +44,8 @@ def build_parser():
         )
         destination.add_argument(
             "--preset",
-            choices=("author",),
-            help="Author's preset: use existing HF_MODELS "
+            action="store_true",
+            help="Use existing HF_MODELS "
             "or HF_DATASETS directory according to repository type, with owner/repository subdirectories",
         )
         command.add_argument(

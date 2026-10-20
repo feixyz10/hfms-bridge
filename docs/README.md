@@ -80,12 +80,12 @@ hfms-download hf owner/repo config.json --local-dir ./model
 hfms-download ms --help
 ```
 
-Choose `--local-dir` or `--preset author` explicitly; there is no global-cache fallback. The default layout writes directly into `--local-dir`. `--layout repo` appends `owner/repository`, preserving all subdirectories inside the repository.
+Choose `--local-dir` or `--preset` explicitly; there is no global-cache fallback. The default layout writes directly into `--local-dir`. `--layout repo` appends `owner/repository`, preserving all subdirectories inside the repository.
 
-The optional author preset selects an existing base directory from `HF_MODELS` for models or `HF_DATASETS` for datasets and appends `owner/repository`:
+The optional `--preset` flag selects an existing base directory from `HF_MODELS` for models or `HF_DATASETS` for datasets and appends `owner/repository`:
 
 ```bash
-hfms-download ms owner/repo --preset author
+hfms-download ms owner/repo --preset
 ```
 
 Only the selected type's variable is required. An unset/empty variable or a nonexistent directory is an error. The preset is not enabled automatically and cannot be combined with `--local-dir` or `--layout`.

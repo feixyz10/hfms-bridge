@@ -33,7 +33,7 @@ class DownloadOptions:
     hub: str
     repo_id: str
     local_dir: object = None
-    preset: str = None
+    preset: bool = False
     layout: str = None
     repo_type: str = "auto"
     revision: str = None
@@ -53,10 +53,10 @@ class DownloadOptions:
     def __post_init__(self):
         if self.hub not in ("hf", "ms") or self.repo_type not in ("auto", "model", "dataset"):
             raise ValueError("Invalid hub or repository type")
-        if (self.local_dir is None) == (self.preset is None):
-            raise ValueError("Specify exactly one of --local-dir or --preset author")
-        if self.preset is not None and (self.preset != "author" or self.layout is not None):
-            raise ValueError("--preset author cannot be combined with --layout")
+        if (self.local_dir is None) == (not self.preset):
+            raise ValueError("Specify exactly one of --local-dir or --preset")
+        if self.preset and self.layout is not None:
+            raise ValueError("--preset cannot be combined with --layout")
         if self.layout not in (None, "direct", "repo"):
             raise ValueError("Invalid layout")
         if self.progress not in ("auto", "on", "off"):
@@ -154,7 +154,7 @@ class Download:
             value = os.getenv(variable)
             if not value or not value.strip() or not Path(value).expanduser().is_dir():
                 raise TransferError(
-                    f"--preset author requires {variable} to point to an existing directory"
+                    f"--preset requires {variable} to point to an existing directory"
                 )
             base = Path(value).expanduser().resolve()
         else:
