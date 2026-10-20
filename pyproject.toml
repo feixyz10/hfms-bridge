@@ -3,9 +3,9 @@ requires = ["hatchling>=1.27,<2"]
 build-backend = "hatchling.build"
 
 [project]
-name = "hf2ms"
-version = "0.3.2"
-description = "Stream Hugging Face models and datasets to ModelScope with parallel uploads and file-level resume"
+name = "hfms-bridge"
+version = "0.4.0"
+description = "Stream models and datasets between HuggingFace and ModelScope"
 readme = "docs/README.md"
 authors = [{ name = "ExcitingMe" }]
 requires-python = ">=3.9"
@@ -29,12 +29,12 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/feixyz10/hf2ms/"
-Source = "https://github.com/feixyz10/hf2ms/"
-Issues = "https://github.com/feixyz10/hf2ms/issues"
+Homepage = "https://github.com/feixyz10/hfms-bridge/"
+Source = "https://github.com/feixyz10/hfms-bridge/"
+Issues = "https://github.com/feixyz10/hfms-bridge/issues"
 
 [project.scripts]
-hf2ms = "hf2ms.cli:main"
+hfms-bridge = "hfms_bridge.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8,<9", "ruff>=0.11,<1"]
@@ -56,6 +56,7 @@ testpaths = ["tests"]
 
 # Keep release metadata compatible with Twine 6 validation.
 [tool.hatch.build.targets.wheel]
+packages = ["src/hfms_bridge"]
 core-metadata-version = "2.4"
 
 [tool.hatch.build.targets.sdist]

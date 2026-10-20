@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from hf2ms import Transfer
-from hf2ms.cli import build_parser, byte_size, main
-from hf2ms.http import HTTPError, TransferError
-from hf2ms.hubs import HuggingFace, ModelScope
-from hf2ms.state import Cache, State
+from hfms_bridge import Transfer
+from hfms_bridge.cli import build_parser, byte_size, main
+from hfms_bridge.http import HTTPError, TransferError
+from hfms_bridge.hubs import HuggingFace, ModelScope
+from hfms_bridge.state import Cache, State
 from test_transfer import BLOB, COMMIT, SHA, options, server
 
 
@@ -20,25 +20,26 @@ def test_cli_ms_token_required_and_hf_optional(monkeypatch, capsys):
     monkeypatch.setenv("MODELSCOPE_API_TOKEN", "not-an-implicit-flag")
     parser = build_parser()
     with pytest.raises(SystemExit) as exc:
-        parser.parse_args(["a/b", "c/d"])
+        parser.parse_args(["hf2ms", "a/b", "c/d"])
     assert exc.value.code == 2
     assert "--ms-token" in capsys.readouterr().err
-    args = parser.parse_args(["a/b", "c/d", "--ms-token", "test"])
+    args = parser.parse_args(["hf2ms", "a/b", "c/d", "--ms-token", "test"])
     assert args.hf_token is None
     assert args.repo_type == "auto"
     assert args.ms_revision == "master"
     assert args.hf_revision == "main"
     assert args.on_conflict == "overwrite"
-    assert args.cache_dir == Path.home() / ".cache" / "hf2ms"
+    assert args.cache_dir == Path.home() / ".cache" / "hfms-bridge"
     assert args.cache_max_size == 256 * 1024**2
     with pytest.raises(SystemExit):
-        parser.parse_args(["a/b", "c/d", "--ms-token", ""])
+        parser.parse_args(["hf2ms", "a/b", "c/d", "--ms-token", ""])
 
 
 def test_cli_patterns_and_token_precedence(monkeypatch):
     monkeypatch.setenv("HF_TOKEN", "env-secret")
     args = build_parser().parse_args(
         [
+            "hf2ms",
             "a/b",
             "c/d",
             "--ms-token",
@@ -73,9 +74,12 @@ def test_cli_passes_tokens_separately(monkeypatch, capsys):
         def run(self):
             return {"dry_run": True, "files": 0}
 
-    monkeypatch.setattr("hf2ms.cli.Transfer", FakeTransfer)
+    monkeypatch.setattr("hfms_bridge.cli.Transfer", FakeTransfer)
     assert (
-        main(["a/b", "c/d", "--ms-token", "secret", "--ms-visibility", "private", "--dry-run"]) == 0
+        main(
+            ["hf2ms", "a/b", "c/d", "--ms-token", "secret", "--visibility", "private", "--dry-run"]
+        )
+        == 0
     )
     assert captured["ms_token"] == "secret"
     assert captured["options"].visibility == "private"

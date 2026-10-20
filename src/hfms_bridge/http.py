@@ -109,7 +109,7 @@ def validate_url(url):
 class HTTP:
     def __init__(self, timeout=120):
         self.session = requests.Session()
-        self.session.headers["User-Agent"] = "hf2ms/0.3.2"
+        self.session.headers["User-Agent"] = "hfms-bridge/0.4.0"
         self.timeout = (15, timeout)
 
     def close(self):
@@ -126,7 +126,7 @@ class HTTP:
         Streamed PUT bodies deliberately do not use this method: replaying a
         consumed stream could silently upload truncated content.
         """
-        if "data" in kwargs:
+        if "data" in kwargs and not isinstance(kwargs["data"], bytes):
             raise ValueError("api_request does not accept streaming request bodies")
         for value in (kwargs.get("files") or {}).values():
             if not (
@@ -183,24 +183,29 @@ class HTTP:
                 continue
             try:
                 if offset and response.status_code == 416:
-                    raise RetryableTransferError("HF Range response rejected the requested offset")
+                    raise RetryableTransferError("Range response rejected the requested offset")
                 check(response)
                 if offset:
                     match = re.fullmatch(
                         r"bytes (\d+)-(\d+)/(\d+)",
                         response.headers.get("Content-Range", ""),
                     )
-                    if (response.status_code != 206 or not match or
-                            tuple(map(int, match.groups())) != (offset, total - 1, total)):
-                        raise RetryableTransferError("HF Range response has invalid status or range")
+                    if (
+                        response.status_code != 206
+                        or not match
+                        or tuple(map(int, match.groups())) != (offset, total - 1, total)
+                    ):
+                        raise RetryableTransferError("Range response has invalid status or range")
                     length = response.headers.get("Content-Length")
                     if length is not None and length != str(total - offset):
-                        raise RetryableTransferError("HF Range response has invalid length")
+                        raise RetryableTransferError("Range response has invalid length")
                 elif response.status_code != 200:
                     raise TransferError("Expected a full-file HTTP 200 response")
                 if response.headers.get("Content-Encoding", "identity") != "identity":
                     if offset:
-                        raise RetryableTransferError("HF Range response ignored Accept-Encoding: identity")
+                        raise RetryableTransferError(
+                            "Range response ignored Accept-Encoding: identity"
+                        )
                     raise TransferError("Server ignored Accept-Encoding: identity")
                 return response
             except BaseException:
@@ -216,18 +221,23 @@ class CheckedStream:
     prevents a corrupt source from completing an upload under the expected OID.
     """
 
-    def __init__(self, raw, size, sha256, chunk_size=1024 * 1024, on_read=None):
+    def __init__(self, raw, size, sha256, chunk_size=1024 * 1024, on_read=None, stage="HF read"):
+        self.stage = stage
         self.raw, self.size, self.expected = raw, size, sha256
         self.on_read = on_read
         self.chunk_size = chunk_size
         self.count = 0
         self.hash = hashlib.sha256()
+        self.git_hash = hashlib.sha1(f"blob {size}\0".encode(), usedforsecurity=False)
 
     def __len__(self):
         return self.size
 
-    @error_stage("HF read")
     def read(self, size=-1):
+        with error_stage(self.stage):
+            return self._read(size)
+
+    def _read(self, size):
         remaining = self.size - self.count
         if not remaining:
             return b""
@@ -241,6 +251,7 @@ class CheckedStream:
             raise TransferError("Source exceeded requested read size")
         self.count += len(data)
         self.hash.update(data)
+        self.git_hash.update(data)
         if self.count == self.size:
             if self._read_raw(1):
                 raise TransferError("Source exceeded its declared size")
@@ -270,7 +281,8 @@ class ResumingReader:
     The retry budget covers the entire reader, not each successful chunk.
     """
 
-    def __init__(self, opener, size, attempts, backoff, cancelled, on_resume):
+    def __init__(self, opener, size, attempts, backoff, cancelled, on_resume, stage="HF read"):
+        self.stage = stage
         self.opener, self.size = opener, size
         self.attempts, self.backoff = attempts, backoff
         self.cancelled, self.on_resume = cancelled, on_resume
@@ -279,7 +291,7 @@ class ResumingReader:
         self.reconnects = 0
 
     def __enter__(self):
-        with error_stage("HF read"):
+        with error_stage(self.stage):
             self.cancelled()
             self.response = self.opener(0)
         return self
@@ -289,7 +301,7 @@ class ResumingReader:
             self.response.close()
 
     def read(self, size):
-        with error_stage("HF read"):
+        with error_stage(self.stage):
             while True:
                 self.cancelled()
                 try:
@@ -307,7 +319,7 @@ class ResumingReader:
                     # At EOF no remaining range exists; do not fabricate bytes.
                     if self.reconnects >= self.attempts - 1 or self.offset >= self.size:
                         raise RetryableTransferError(
-                            f"HF read recovery exhausted ({type(exc).__name__}); "
+                            f"Source recovery exhausted ({type(exc).__name__}); "
                             "restarting file if attempts remain"
                         ) from exc
                     self.reconnects += 1

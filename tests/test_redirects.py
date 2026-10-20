@@ -6,8 +6,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 import requests
 
-from hf2ms.http import HTTP, HTTPError, TransferError, payload, trusted_api_redirect
-from hf2ms.hubs import HuggingFace, ModelScope
+from hfms_bridge.http import HTTP, HTTPError, TransferError, payload, trusted_api_redirect
+from hfms_bridge.hubs import HuggingFace, ModelScope
 
 
 @contextmanager

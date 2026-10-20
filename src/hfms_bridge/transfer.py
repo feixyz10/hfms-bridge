@@ -11,30 +11,35 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Event, Lock, current_thread, local, main_thread
 from types import SimpleNamespace
-from typing import Optional, Tuple
+from typing import Tuple
 
 import requests
 
 from .http import (
-    CheckedStream, HTTPError, ResumingReader, RetryableTransferError, TransferError, error_stage,
+    CheckedStream,
+    HTTPError,
+    ResumingReader,
+    RetryableTransferError,
+    TransferError,
+    error_stage,
 )
 from .hubs import HuggingFace, ModelScope
+from .hubs.common import INLINE_LIMIT
 from .state import Cache
 from .progress import Progress
 
-log = logging.getLogger("hf2ms")
-INLINE_LIMIT = 1024 * 1024
-METADATA = {"README.MD", ".GITATTRIBUTES", "CONFIGURATION.JSON"}
+log = logging.getLogger("hfms-bridge")
 
 
 @dataclass
 class TransferOptions:
     source: str
     destination: str
+    direction: str = "hf2ms"
     repo_type: str = "auto"
     hf_revision: str = "main"
     ms_revision: str = "master"
-    cache_dir: Path = field(default_factory=lambda: Path.home() / ".cache" / "hf2ms")
+    cache_dir: Path = field(default_factory=lambda: Path.home() / ".cache" / "hfms-bridge")
     cache_max_size: int = 256 * 1024 * 1024
     visibility: str = "auto"
     on_conflict: str = "overwrite"
@@ -51,6 +56,8 @@ class TransferOptions:
     exclude: Tuple[str, ...] = ()
 
     def __post_init__(self):
+        if self.direction not in ("hf2ms", "ms2hf"):
+            raise ValueError("direction must be hf2ms or ms2hf")
         if isinstance(self.workers, bool) or not isinstance(self.workers, int) or self.workers < 1:
             raise ValueError("workers must be a positive integer")
         if self.progress not in ("auto", "on", "off"):
@@ -70,25 +77,40 @@ class TransferOptions:
 
 
 class Transfer:
-    def __init__(self, options: TransferOptions, ms_token: str, hf_token: Optional[str] = None):
-        if not ms_token or not ms_token.strip():
-            raise ValueError("A non-empty ms_token is required")
+    def __init__(self, options: TransferOptions, ms_token=None, hf_token=None):
+        target_token = ms_token if options.direction == "hf2ms" else hf_token
+        if not target_token or not target_token.strip():
+            raise ValueError("A non-empty destination token is required")
         self.options = options
+        self.ms_token, self.hf_token = ms_token, hf_token
         self.progress = Progress(options.progress)
         self._commit_lock = Lock()
         self._cancel = Event()
         self._interrupt = SimpleNamespace(requested=False)
-        self.source = HuggingFace(
-            options.source, options.repo_type, hf_token, options.hf_endpoint, options.timeout
+        forward = options.direction == "hf2ms"
+        hf = HuggingFace(
+            options.source if forward else options.destination,
+            options.repo_type,
+            hf_token,
+            options.hf_endpoint,
+            options.timeout,
         )
-        self.target = ModelScope(
-            options.destination,
+        # The public mirror redirects writes to HF. Route the destination before
+        # sending any body: streamed commits cannot safely replay a 308 response.
+        # Keep options unchanged so existing tasks retain their checkpoint identity.
+        if not forward and hf.endpoint == "https://hf-mirror.com":
+            hf.endpoint = "https://huggingface.co"
+        ms = ModelScope(
+            options.destination if forward else options.source,
             options.repo_type,
             ms_token,
             options.ms_revision,
             options.ms_endpoint,
             options.timeout,
         )
+        hf.revision = options.hf_revision
+        self.source, self.target = (hf, ms) if forward else (ms, hf)
+        self.source_revision = options.hf_revision if forward else options.ms_revision
 
     def _check_cancelled(self):
         if self._cancel.is_set() or self._interrupt.requested:
@@ -147,6 +169,7 @@ class Transfer:
         identity = {
             key: getattr(opt, key)
             for key in (
+                "direction",
                 "source",
                 "destination",
                 "hf_revision",
@@ -169,8 +192,8 @@ class Transfer:
                 continue
             if any(fnmatch.fnmatchcase(file.path, p) for p in opt.exclude):
                 continue
-            if file.path.rsplit("/", 1)[-1].upper() in METADATA and file.size > INLINE_LIMIT:
-                raise TransferError("Repository metadata exceeds the 1 MiB inline limit")
+            if not self.target.needs_sample:
+                self.target.mode(file)  # Validate destination-specific metadata limits early.
             yield file
 
     def _comparison(self, file, remote, commit, state, dry_run=False):
@@ -183,6 +206,10 @@ class Transfer:
         if remote.get("size") is not None and remote["size"] != file.size:
             return "overwrite", sha
         if not remote.get("sha256"):
+            if remote.get("git_sha1") and not dry_run:
+                sha, git = self._retry(lambda: self._read(file, commit, sha, git=True))
+                state.mark(file.path, file.size, sha, "hashed")
+                return ("same" if git == remote["git_sha1"] else "overwrite"), sha
             return "unknown", sha
         if not sha:
             if dry_run:
@@ -202,38 +229,45 @@ class Transfer:
         opt = self.options
         cache = Cache(opt.cache_dir, opt.cache_max_size)
         try:
+            if opt.direction == "ms2hf" and opt.hf_endpoint.rstrip("/") == "https://hf-mirror.com":
+                log.info("Using https://huggingface.co for HF destination requests")
             self.target.repo_type = self._retry(self.source.detect)
             identity = self._identity()
             exists = self._retry(self.target.repo_exists)
             if exists:
                 self._retry(self.target.check_revision)
-            elif opt.ms_revision != "master":
+            elif self.target.revision != self.target.default_revision:
                 raise TransferError(
-                    "New MS repositories start on master; create the requested "
-                    "branch first or use --ms-revision master"
+                    f"New {self.target.label} repositories start on {self.target.default_revision}; "
+                    "create the requested branch first"
                 )
             context = cache.read(identity) if opt.dry_run else cache.open(identity)
             with context as state:
+                self.source.state = state
+                self.source.read_only = opt.dry_run
                 pinned = state.get("source_commit") if state else None
                 complete = state.get("complete") if state else None
                 commit = (
                     pinned
                     if pinned and not complete and not opt.restart
-                    else self._retry(lambda: self.source.resolve(opt.hf_revision))
+                    else self._retry(lambda: self.source.resolve(self.source_revision))
                 )
                 if state and not opt.dry_run:
                     if commit != pinned or opt.restart:
                         state.reset(commit)
                     state.set("complete", False)
+                    cache.enforce_state(state)
                 # Completed state for an older source commit must not inform comparisons.
                 read_state = state if commit == pinned and not opt.restart else None
                 log.info(
-                    "HF %s %s @ %s -> MS %s @ %s",
+                    "%s %s %s @ %s -> %s %s @ %s",
+                    self.source.label,
                     self.source.repo_type,
                     opt.source,
                     commit,
+                    self.target.label,
                     opt.destination,
-                    opt.ms_revision,
+                    self.target.revision,
                 )
                 if opt.dry_run:
                     return self._preview(commit, exists, read_state)
@@ -255,7 +289,12 @@ class Transfer:
                     if not isinstance(license_name, str):
                         license_name = "Other"
                     self._retry(lambda: self.target.create_repo(self._visibility(), license_name))
-                    log.info("Created MS repository: %s (%s)", opt.destination, self._visibility())
+                    log.info(
+                        "Created %s repository: %s (%s)",
+                        self.target.label,
+                        opt.destination,
+                        self._visibility(),
+                    )
                 if self.progress.enabled:
                     self.progress.start(self._retry(lambda: sum(1 for _ in self._selected(commit))))
                 counts = self._run_files(commit, state, cache, exists)
@@ -293,7 +332,8 @@ class Transfer:
     def _new_worker(self):
         # Session cookies, authentication, connection pools and directory caches
         # belong to a single thread. Only progress and the commit mutex are shared.
-        worker = Transfer(self.options, self.target.token, self.source.token)
+        worker = Transfer(self.options, self.ms_token, self.hf_token)
+        worker.source.state = getattr(self.source, "state", None)
         worker.source.repo_type = self.source.repo_type
         worker.target.repo_type = self.target.repo_type
         worker.progress = self.progress
@@ -304,7 +344,9 @@ class Transfer:
 
     @contextmanager
     def _worker_pool(self, stopped):
-        pool = ThreadPoolExecutor(max_workers=self.options.workers, thread_name_prefix="hf2ms")
+        pool = ThreadPoolExecutor(
+            max_workers=self.options.workers, thread_name_prefix="hfms-bridge"
+        )
         previous = None
 
         def interrupt(_signum, _frame):
@@ -434,7 +476,8 @@ class Transfer:
             "dry_run": True,
             "source_commit": commit,
             "repo_type": self.source.repo_type,
-            "ms_revision": self.options.ms_revision,
+            "destination_revision": self.target.revision,
+            "direction": self.options.direction,
             "create_repo": not exists,
             "visibility": self._visibility() if not exists else None,
             "files": 0,
@@ -449,7 +492,7 @@ class Transfer:
             "would_error": 0,
         }
         if not exists:
-            log.info("Would create MS repository (%s)", report["visibility"])
+            log.info("Would create %s repository (%s)", self.target.label, report["visibility"])
         for file in self._selected(commit):
             remote = self._retry(lambda file=file: self.target.file(file.path)) if exists else None
             decision, _ = self._comparison(file, remote, commit, state, dry_run=True)
@@ -471,17 +514,26 @@ class Transfer:
     def _source_reader(self, file, commit):
         def report(offset, attempt):
             log.warning(
-                "%r: HF read interrupted; resuming at byte %s (reconnect %s/%s)",
-                file.path, offset, attempt, self.options.attempts - 1,
+                "%r: %s read interrupted; resuming at byte %s (reconnect %s/%s)",
+                file.path,
+                self.source.label,
+                offset,
+                attempt,
+                self.options.attempts - 1,
             )
 
         return ResumingReader(
             lambda offset: self.source.open(file, commit, offset=offset),
-            file.size, self.options.attempts, self._backoff, self._check_cancelled, report,
+            file.size,
+            self.options.attempts,
+            self._backoff,
+            self._check_cancelled,
+            report,
+            stage=f"{self.source.label} read",
         )
 
-    def _read(self, file, commit, sha256="", collect=False):
-        self.progress.phase("HF read" if collect else "Hashing", reset=True)
+    def _read(self, file, commit, sha256="", collect=False, git=False):
+        self.progress.phase(f"{self.source.label} read" if collect else "Hashing", reset=True)
         with self._source_reader(file, commit) as reader:
             stream = CheckedStream(
                 reader,
@@ -489,6 +541,7 @@ class Transfer:
                 sha256,
                 self.options.chunk_size,
                 on_read=self._on_read,
+                stage=f"{self.source.label} read",
             )
             chunks = []
             while True:
@@ -498,17 +551,24 @@ class Transfer:
                 if collect:
                     chunks.append(data)
             stream.verify()
-            return stream.hash.hexdigest(), b"".join(chunks) if collect else None
+            return stream.hash.hexdigest(), (
+                stream.git_hash.hexdigest() if git else b"".join(chunks) if collect else None
+            )
 
     def _file(self, file, commit, state):
         self.progress.phase("Preparing", reset=True)
         record = state.file(file.path)
         sha256 = file.sha256 or (record[1] if record else "")
-        inline = file.size <= INLINE_LIMIT and not file.sha256
-        if file.path.rsplit("/", 1)[-1].upper() in METADATA:
-            if file.size > INLINE_LIMIT:
-                raise TransferError("Repository metadata exceeds the 1 MiB inline limit")
-            inline = True
+        sample = b""
+        if self.target.needs_sample and file.size:
+            with self._source_reader(file, commit) as reader:
+                sample = reader.read(min(file.size, 512))
+        with error_stage(f"{self.target.label} preupload"):
+            mode = self.target.mode(file, sample)
+        if mode == "normal" and file.size > INLINE_LIMIT:
+            self._commit_regular_stream(file, commit, state, sha256)
+            return
+        inline = mode == "normal"
         operation = {"action": "create", "path": file.path, "size": file.size}
         if inline:
             sha256, data = self._read(file, commit, sha256, collect=True)
@@ -520,13 +580,13 @@ class Transfer:
             )
         else:
             if not sha256:
-                self.progress.info("No HF SHA-256; streaming hash pass: %s", file.path)
+                self.progress.info("No source SHA-256; streaming hash pass: %s", file.path)
                 sha256, _ = self._read(file, commit)
                 state.mark(file.path, file.size, sha256, "hashed")
-            with error_stage("MS negotiate"):
+            with error_stage(f"{self.target.label} negotiate"):
                 actions = self.target.negotiate(sha256, file.size)
             if actions is not None:
-                self.progress.phase("HF -> MS", reset=True)
+                self.progress.phase(f"{self.source.label} -> {self.target.label}", reset=True)
                 with self._source_reader(file, commit) as reader:
                     stream = CheckedStream(
                         reader,
@@ -534,8 +594,9 @@ class Transfer:
                         sha256,
                         self.options.chunk_size,
                         on_read=self._on_read,
+                        stage=f"{self.source.label} read",
                     )
-                    with error_stage("MS upload"):
+                    with error_stage(f"{self.target.label} upload"):
                         self.target.upload(actions, stream, sha256, file.size)
             else:
                 self.progress.phase("Reused")
@@ -548,6 +609,27 @@ class Transfer:
         with self._commit_lock:
             self._check_cancelled()
             self.progress.phase("Committing")
-            with error_stage("MS commit"):
+            with error_stage(f"{self.target.label} commit"):
                 self.target.commit(operation)
             state.mark(file.path, file.size, sha256, "committed")
+
+    def _commit_regular_stream(self, file, commit, state, sha256):
+        if not self.target.streaming_regular:
+            raise TransferError("Destination cannot stream a large regular file")
+        self.progress.phase("Waiting to commit")
+        with self._commit_lock:
+            self._check_cancelled()
+            self.progress.phase(f"{self.source.label} -> {self.target.label} commit", reset=True)
+            with self._source_reader(file, commit) as reader:
+                stream = CheckedStream(
+                    reader,
+                    file.size,
+                    sha256,
+                    self.options.chunk_size,
+                    on_read=self._on_read,
+                    stage=f"{self.source.label} read",
+                )
+                with error_stage(f"{self.target.label} commit"):
+                    self.target.commit_stream(file, stream)
+                stream.verify()
+                state.mark(file.path, file.size, stream.hash.hexdigest(), "committed")

@@ -1,5 +1,5 @@
 .venv/
-.hf2ms/
+.hfms-bridge/
 __pycache__/
 *.py[cod]
 .pytest_cache/

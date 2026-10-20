@@ -8,10 +8,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from hf2ms import Transfer, TransferOptions
-from hf2ms.http import TransferError
-from hf2ms.hubs import File
-from hf2ms.state import Cache, State
+from hfms_bridge import Transfer, TransferOptions
+from hfms_bridge.http import TransferError
+from hfms_bridge.hubs import File
+from hfms_bridge.state import Cache, State
 
 
 def test_cache_budget_waits_for_current_checkpoint_transaction(tmp_path):
@@ -118,9 +118,9 @@ import os, signal, sys, threading, time
 from pathlib import Path
 from types import SimpleNamespace
 from filelock import Timeout
-from hf2ms import Transfer, TransferOptions
-from hf2ms.hubs import File
-from hf2ms.state import Cache, State
+from hfms_bridge import Transfer, TransferOptions
+from hfms_bridge.hubs import File
+from hfms_bridge.state import Cache, State
 
 path = Path(sys.argv[1]) / 'checkpoint'
 started, release = threading.Event(), threading.Event()
@@ -163,7 +163,7 @@ def send_signals():
 original_start = threading.Thread.start
 def start_with_gap(thread):
     original_start(thread)
-    if thread.name.startswith('hf2ms'):
+    if thread.name.startswith('hfms-bridge'):
         assert started.wait(5)
         time.sleep(.05)
 threading.Thread.start = start_with_gap

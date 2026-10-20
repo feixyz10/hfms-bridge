@@ -20,6 +20,7 @@ class State:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.lock = FileLock(str(self.path) + ".lock", timeout=0)
         self._mutex = RLock()
+        self.max_size = None
 
     def __enter__(self):
         self.lock.acquire()
@@ -87,6 +88,53 @@ class State:
                 self.db.execute("INSERT OR REPLACE INTO metadata VALUES ('complete', 'false')")
             self.db.execute("VACUUM")
 
+    def snapshot(self, files):
+        """Atomically replace only source metadata, never file contents."""
+        from dataclasses import asdict
+
+        digest = hashlib.sha256()
+        with self._mutex, self.db:
+            self.db.execute(
+                "CREATE TABLE IF NOT EXISTS source_files "
+                "(path TEXT PRIMARY KEY, metadata TEXT NOT NULL)"
+            )
+            self.db.execute("DELETE FROM source_files")
+            for file in files:
+                encoded = json.dumps(asdict(file), sort_keys=True)
+                digest.update(encoded.encode())
+                self.db.execute("INSERT INTO source_files VALUES (?, ?)", (file.path, encoded))
+                if self.max_size is not None:
+                    pages = self.db.execute("PRAGMA page_count").fetchone()[0]
+                    page_size = self.db.execute("PRAGMA page_size").fetchone()[0]
+                    if pages * page_size > self.max_size:
+                        raise TransferError(
+                            "MS source snapshot exceeds cache budget; increase --cache-max-size"
+                        )
+            snapshot_id = "ms-snapshot:" + digest.hexdigest()
+            self.db.execute("DELETE FROM files")
+            self.db.execute(
+                "INSERT OR REPLACE INTO metadata VALUES ('source_commit', ?)",
+                (json.dumps(snapshot_id),),
+            )
+            self.db.execute("INSERT OR REPLACE INTO metadata VALUES ('complete', 'false')")
+        return snapshot_id
+
+    def source_files(self):
+        from .hubs import File
+
+        # Keyset iteration keeps memory bounded and releases the mutex between rows.
+        last = ""
+        while True:
+            with self._mutex:
+                row = self.db.execute(
+                    "SELECT path, metadata FROM source_files WHERE path > ? ORDER BY path LIMIT 1",
+                    (last,),
+                ).fetchone()
+            if row is None:
+                return
+            last = row[0]
+            yield File(**json.loads(row[1]))
+
 
 class Cache:
     """Evict only completed, unlocked jobs; never discard active recovery data."""
@@ -131,6 +179,7 @@ class Cache:
         with self._guard():
             self._prune(protected=path)
             state = State(path)
+            state.max_size = self.max_size
             state.__enter__()
         try:
             state.bind(identity)

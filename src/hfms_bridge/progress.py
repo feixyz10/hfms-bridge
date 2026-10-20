@@ -90,7 +90,7 @@ class Progress:
 
     def info(self, message, *args):
         if not self.enabled:
-            logging.getLogger("hf2ms").info(message, *args)
+            logging.getLogger("hfms-bridge").info(message, *args)
 
     def close(self):
         # Called only after all workers have finished.

@@ -8,10 +8,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from hf2ms import Transfer, TransferOptions
-from hf2ms.http import CheckedStream, HTTPError, RetryableTransferError, TransferError
-from hf2ms.hubs import ModelScope
-from hf2ms.state import State
+from hfms_bridge import Transfer, TransferOptions
+from hfms_bridge.http import CheckedStream, HTTPError, RetryableTransferError, TransferError
+from hfms_bridge.hubs import ModelScope
+from hfms_bridge.state import State
 
 COMMIT = "a" * 40
 BLOB = b"abcdefgh" * (256 * 1024)
@@ -332,7 +332,7 @@ def test_retry_renegotiates_instead_of_replaying_body(tmp_path, monkeypatch):
         opt.attempts = 2
         data["fail_put"] = True
         monkeypatch.setattr(
-            "hf2ms.transfer.Transfer._backoff", lambda self, _: data.update(fail_put=False)
+            "hfms_bridge.transfer.Transfer._backoff", lambda self, _: data.update(fail_put=False)
         )
         Transfer(opt, "ms-secret").run()
         assert data["puts"] == 2
@@ -420,7 +420,7 @@ def test_missing_blob_response_is_not_reuse(monkeypatch):
     ],
 )
 def test_invalid_batch_is_retryable(response, monkeypatch):
-    from hf2ms.http import RetryableTransferError
+    from hfms_bridge.http import RetryableTransferError
 
     target = ModelScope("owner/repo", "dataset", "secret", "master")
     monkeypatch.setattr(target, "_api", lambda *args, **kwargs: response)
@@ -437,7 +437,7 @@ def test_malformed_batch_retries_then_succeeds(tmp_path, monkeypatch):
         opt.attempts = 3
         data["malformed_batch"] = True
         monkeypatch.setattr(
-            "hf2ms.transfer.Transfer._backoff", lambda self, _: data.update(malformed_batch=False)
+            "hfms_bridge.transfer.Transfer._backoff", lambda self, _: data.update(malformed_batch=False)
         )
         result = Transfer(opt, "ms-secret").run()
         assert result["committed"] == 2
@@ -446,13 +446,13 @@ def test_malformed_batch_retries_then_succeeds(tmp_path, monkeypatch):
 
 
 def test_malformed_batch_exhaustion_preserves_resume(tmp_path, monkeypatch):
-    from hf2ms.http import RetryableTransferError
+    from hfms_bridge.http import RetryableTransferError
 
     with server() as (base, data):
         opt = options(tmp_path, base)
         opt.attempts = 3
         data["malformed_batch"] = True
-        monkeypatch.setattr("hf2ms.transfer.Transfer._backoff", lambda self, _: None)
+        monkeypatch.setattr("hfms_bridge.transfer.Transfer._backoff", lambda self, _: None)
         transfer = Transfer(opt, "ms-secret")
         original_files = transfer.source.files
         monkeypatch.setattr(

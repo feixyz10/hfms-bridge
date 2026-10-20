@@ -9,10 +9,10 @@ from urllib.parse import unquote
 
 import pytest
 
-from hf2ms import Transfer, TransferOptions
-from hf2ms.cli import build_parser
-from hf2ms.http import HTTPError
-from hf2ms.state import State
+from hfms_bridge import Transfer, TransferOptions
+from hfms_bridge.cli import build_parser
+from hfms_bridge.http import HTTPError
+from hfms_bridge.state import State
 from test_transfer import COMMIT, options, server
 
 
@@ -139,7 +139,7 @@ def parallel_server(count=7):
 
 @pytest.mark.parametrize("workers", [1, 3])
 def test_actual_parallel_puts_serial_commits_and_resume(tmp_path, workers, monkeypatch):
-    from hf2ms.http import HTTP
+    from hfms_bridge.http import HTTP
 
     # Every Session must remain owned by one thread and be closed after the job.
     session_threads = {}
@@ -212,7 +212,7 @@ def test_unfinished_serial_checkpoint_resumes_with_threads(tmp_path, monkeypatch
             "files",
             lambda c: iter(sorted(original_files(c), key=lambda f: f.path)),
         )
-        monkeypatch.setattr("hf2ms.transfer.Transfer._backoff", lambda self, _: None)
+        monkeypatch.setattr("hfms_bridge.transfer.Transfer._backoff", lambda self, _: None)
         with pytest.raises(Exception, match="LFS batch"):
             transfer.run()
         state_path = next(tmp_path.glob("*.sqlite3"))
@@ -250,7 +250,7 @@ def test_failed_parallel_upload_can_resume_serially(tmp_path):
 
 
 def test_worker_options_and_cache_identity(tmp_path):
-    assert build_parser().parse_args(["a/b", "c/d", "--ms-token", "x"]).workers == 4
+    assert build_parser().parse_args(["hf2ms", "a/b", "c/d", "--ms-token", "x"]).workers == 4
     assert TransferOptions("a/b", "c/d").workers == 4
     for invalid in [0, -1, 1.5, True]:
         with pytest.raises(ValueError, match="workers"):
@@ -269,9 +269,9 @@ def test_failure_stops_new_files_but_drains_active_worker(tmp_path, monkeypatch)
     import logging
     from types import SimpleNamespace
 
-    from hf2ms.http import TransferError
-    from hf2ms.hubs import File
-    from hf2ms.state import Cache
+    from hfms_bridge.http import TransferError
+    from hfms_bridge.hubs import File
+    from hfms_bridge.state import Cache
 
     barrier = threading.Barrier(2, timeout=10)
     release = threading.Event()
@@ -312,7 +312,7 @@ def test_failure_stops_new_files_but_drains_active_worker(tmp_path, monkeypatch)
         ),
     )
     signal = FailureSignal()
-    logging.getLogger("hf2ms").addHandler(signal)
+    logging.getLogger("hfms-bridge").addHandler(signal)
     try:
         with State(tmp_path / "test-state") as state:
 
@@ -338,6 +338,6 @@ def test_failure_stops_new_files_but_drains_active_worker(tmp_path, monkeypatch)
             assert state.file("0") is None
         assert sorted(closed) == ["source", "source", "target", "target"]
     finally:
-        logging.getLogger("hf2ms").removeHandler(signal)
+        logging.getLogger("hfms-bridge").removeHandler(signal)
         transfer.source.close()
         transfer.target.close()

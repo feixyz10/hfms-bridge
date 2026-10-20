@@ -3,10 +3,10 @@ import io
 import pytest
 from tqdm import tqdm
 
-from hf2ms import Transfer
-from hf2ms.cli import build_parser
-from hf2ms.http import HTTPError
-from hf2ms.progress import Progress
+from hfms_bridge import Transfer
+from hfms_bridge.cli import build_parser
+from hfms_bridge.http import HTTPError
+from hfms_bridge.progress import Progress
 from test_transfer import BLOB, options, server
 
 
@@ -32,7 +32,7 @@ def bars(monkeypatch):
             self.phases.append(desc)
             return super().set_description_str(desc, refresh=refresh)
 
-    monkeypatch.setattr("hf2ms.progress.tqdm", Recorded)
+    monkeypatch.setattr("hfms_bridge.progress.tqdm", Recorded)
     return records
 
 
@@ -67,7 +67,7 @@ def test_retry_resets_bytes_without_double_counting(tmp_path, bars, monkeypatch)
     with server() as (base, data):
         data["fail_commit"] = True
         monkeypatch.setattr(
-            "hf2ms.transfer.Transfer._backoff", lambda self, _: data.update(fail_commit=False)
+            "hfms_bridge.transfer.Transfer._backoff", lambda self, _: data.update(fail_commit=False)
         )
         opt = options(tmp_path, base, progress="on")
         opt.attempts = 2
@@ -110,7 +110,7 @@ def test_auto_off_for_redirected_stderr(monkeypatch, capsys):
     progress.advance()
     progress.close()
     assert capsys.readouterr().err == ""
-    assert build_parser().parse_args(["a/b", "c/d", "--ms-token", "x"]).progress == "auto"
+    assert build_parser().parse_args(["hf2ms", "a/b", "c/d", "--ms-token", "x"]).progress == "auto"
 
 
 def test_progress_choice_does_not_change_checkpoint_identity(tmp_path):
@@ -185,7 +185,7 @@ def test_parallel_retry_resets_only_its_own_bar(tmp_path, bars, monkeypatch):
         barrier = threading.Barrier(3, timeout=10)
         data["put_hook"] = lambda name: barrier.wait() if data["puts"][name] == 1 else None
         data["fail_put_once"].add("part-0.bin")
-        monkeypatch.setattr("hf2ms.transfer.Transfer._backoff", lambda self, _: None)
+        monkeypatch.setattr("hfms_bridge.transfer.Transfer._backoff", lambda self, _: None)
         opt = options(tmp_path, base, workers=3, progress="on")
         opt.attempts = 2
         assert Transfer(opt, "ms-secret").run() == {"committed": 3, "skipped": 0}

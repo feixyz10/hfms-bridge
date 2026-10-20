@@ -1,8 +1,8 @@
 import pytest
 
-from hf2ms import Transfer
-from hf2ms.http import HTTPError, TransferError
-from hf2ms.hubs import ModelScope
+from hfms_bridge import Transfer
+from hfms_bridge.http import HTTPError, TransferError
+from hfms_bridge.hubs import ModelScope
 from test_transfer import options, server
 
 
